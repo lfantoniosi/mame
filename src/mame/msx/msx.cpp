@@ -114,6 +114,8 @@
 msx_state::msx_state(const machine_config &mconfig, device_type type, const char *tag, XTAL main_xtal, int cpu_xtal_divider)
 	: driver_device(mconfig, type, tag)
 	, m_maincpu(*this, "maincpu")
+	, m_sms_vdp(*this, "sms_vdp")
+	, m_sms_screen(*this, "sms_screen")
 	, m_cassette(*this, "cassette")
 	, m_ay8910(*this, "ay8910")
 	, m_dac(*this, "dac")
@@ -161,6 +163,7 @@ msx_state::msx_state(const machine_config &mconfig, device_type type, const char
 	, m_code_led(*this, "code_led")
 	, m_main_xtal(main_xtal)
 	, m_cpu_xtal_divider(cpu_xtal_divider)
+
 {
 	m_view[0] = &m_view_page0;
 	m_view[1] = &m_view_page1;
@@ -280,6 +283,13 @@ void msx_state::msx_base_io_map(address_map &map)
 	map(0xd8, 0xd9).w(FUNC(msx_state::kanji_w));
 	map(0xd9, 0xd9).r(FUNC(msx_state::kanji_r));
 	// 0xfc - 0xff : Memory mapper I/O ports. I/O handlers will be installed if a memory mapper is present in a system
+
+	map(0x88, 0x88).rw(m_sms_vdp, FUNC(sega315_5124_device::data_read), FUNC(sega315_5124_device::data_write));
+	map(0x89, 0x89).rw(m_sms_vdp, FUNC(sega315_5124_device::control_read), FUNC(sega315_5124_device::control_write));
+
+	map(0x48, 0x48).rw(m_sms_vdp, FUNC(sega315_5124_device::vcount_read), FUNC(sega315_5124_device::psg_w));
+	map(0x49, 0x49).rw(m_sms_vdp, FUNC(sega315_5124_device::hcount_read), FUNC(sega315_5124_device::psg_w));
+
 }
 
 void msx_state::msx1_io_map(address_map &map)
@@ -453,6 +463,25 @@ void msx_state::kanji_w(offs_t offset, u8 data)
 		m_kanji_latch = (m_kanji_latch & 0x1f800) | ((data & 0x3f) << 5);
 }
 
+template <typename X>
+void msx_state::screen_sms_ntsc_raw_params(screen_device& screen, X&& pixelclock)
+{
+	screen.set_raw(pixelclock,
+		sega315_5124_device::WIDTH,
+		sega315_5124_device::LBORDER_START + sega315_5124_device::LBORDER_WIDTH - 2,
+		sega315_5124_device::LBORDER_START + sega315_5124_device::LBORDER_WIDTH + 256 + 10,
+		sega315_5124_device::HEIGHT_NTSC,
+		sega315_5124_device::TBORDER_START + sega315_5124_device::NTSC_224_TBORDER_HEIGHT,
+		sega315_5124_device::TBORDER_START + sega315_5124_device::NTSC_224_TBORDER_HEIGHT + 224);
+	screen.set_refresh_hz(pixelclock / (sega315_5124_device::WIDTH * sega315_5124_device::HEIGHT_NTSC));
+}
+
+uint32_t msx_state::screen_update_sms(screen_device& screen, bitmap_rgb32& bitmap, const rectangle& cliprect)
+{
+	m_sms_vdp->screen_update(screen, bitmap, cliprect);
+	return 0;
+}
+
 void msx_state::msx_base(ay8910_type ay8910_type, machine_config &config, const internal_layout &layout)
 {
 	// basic machine hardware
@@ -488,6 +517,21 @@ void msx_state::msx_base(ay8910_type ay8910_type, machine_config &config, const 
 
 	MSX_GENERAL_PURPOSE_PORT(config, m_gen_port1, msx_general_purpose_port_devices, "joystick");
 	MSX_GENERAL_PURPOSE_PORT(config, m_gen_port2, msx_general_purpose_port_devices, "joystick");
+
+	SCREEN(config, m_sms_screen, SCREEN_TYPE_RASTER);
+	screen_sms_ntsc_raw_params(*m_sms_screen, XTAL(10'738'635) / 2);
+	m_sms_screen->set_screen_update(FUNC(msx_state::screen_update_sms));
+	SEGA315_5246(config, m_sms_vdp, XTAL(10'738'635));
+	m_sms_vdp->set_screen(m_sms_screen);
+	m_sms_vdp->set_is_pal(false);
+
+	m_sms_vdp->n_csync().set(m_mainirq, FUNC(input_merger_device::in_w<0>));
+	m_sms_vdp->vblank().set(m_mainirq, FUNC(input_merger_device::in_w<0>));
+	m_sms_vdp->n_int().set(m_mainirq, FUNC(input_merger_device::in_w<0>));
+	m_sms_vdp->n_nmi().set(m_mainirq, FUNC(input_merger_device::in_w<0>));
+
+	m_sms_vdp->add_route(ALL_OUTPUTS, m_speaker, 1.00);
+
 
 	if (m_hw_def.has_printer_port())
 	{
@@ -559,7 +603,8 @@ void msx_state::msx1(vdp_type vdp_type, ay8910_type ay8910_type, machine_config 
 void msx2_base_state::msx2_base_io_map(address_map &map)
 {
 	msx_base_io_map(map);
-	map(0x40, 0x4f).rw(FUNC(msx2_base_state::switched_r), FUNC(msx2_base_state::switched_w));
+	map(0x40, 0x47).rw(FUNC(msx2_base_state::switched_r), FUNC(msx2_base_state::switched_w));
+	map(0x4a, 0x4f).rw(FUNC(msx2_base_state::switched_r), FUNC(msx2_base_state::switched_w));
 	map(0xb4, 0xb4).w(FUNC(msx2_base_state::rtc_latch_w));
 	map(0xb5, 0xb5).rw(FUNC(msx2_base_state::rtc_reg_r), FUNC(msx2_base_state::rtc_reg_w));
 }

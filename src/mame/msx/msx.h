@@ -25,6 +25,8 @@
 #include "video/v9938.h"
 #include "video/tms9928a.h"
 
+#include "video/315_5124.h"
+#include "screen.h"
 
 class msx_hw_def
 {
@@ -48,6 +50,8 @@ private:
 
 class msx_state : public driver_device
 {
+	uint32_t screen_update_sms(screen_device& screen, bitmap_rgb32& bitmap, const rectangle& cliprect);
+
 protected:
 	msx_state(const machine_config &mconfig, device_type type, const char *tag, XTAL main_xtal, int cpu_xtal_divider);
 
@@ -159,6 +163,8 @@ protected:
 	virtual void machine_start() override;
 	virtual void machine_reset() override;
 
+	template <typename X> static void screen_sms_ntsc_raw_params(screen_device& screen, X&& pixelclock);
+
 	void expanded_slot_w(u8 data);
 	u8 expanded_slot_r();
 	u8 kanji_r(offs_t offset);
@@ -190,6 +196,9 @@ protected:
 	required_device<speaker_device> m_speaker;
 	required_device<input_merger_any_high_device> m_mainirq;
 	required_device<screen_device> m_screen;
+
+	required_device<screen_device> m_sms_screen;
+	required_device<sega315_5124_device> m_sms_vdp;
 	optional_memory_region m_region_kanji;
 	required_device<msx_general_purpose_port_device> m_gen_port1;
 	required_device<msx_general_purpose_port_device> m_gen_port2;
