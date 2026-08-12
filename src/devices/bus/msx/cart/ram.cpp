@@ -109,6 +109,7 @@ Not supported memory mappers:
 
 #include "bus/msx/slot/cartridge.h"
 #include "bus/generic/slot.h"
+#include "sound/k051649.h"
 #include "sound/sn76496.h"
 
 
@@ -527,6 +528,301 @@ void msx_cart_double_ram_device::set_page_views()
 		m_view[i].select(m_megaram ? MODE_MR : MODE_MM);
 }
 
+
+class msx_cart_wondertang_megaram_device : public device_t, public msx_cart_interface
+{
+public:
+	msx_cart_wondertang_megaram_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock)
+		: device_t(mconfig, MSX_CART_WONDERTANG_MEGARAM, tag, owner, clock)
+		, msx_cart_interface(mconfig, *this)
+		, m_k051649(*this, "k051649")
+	{ }
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
+
+private:
+	static constexpr u8 MODE_DDX_SCC = 0x00;
+	static constexpr u8 MODE_DDX = 0x01;
+	static constexpr u8 MODE_LINEAR = 0x02;
+	static constexpr u8 MODE_K4 = 0x04;
+	static constexpr u8 MODE_K5 = 0x05;
+	static constexpr u8 MODE_ASCII8 = 0x08;
+	static constexpr u8 MODE_ASCII16 = 0x16;
+
+	template <unsigned Page> u8 memory_r(offs_t offset);
+	template <unsigned Page> void memory_w(offs_t offset, u8 data);
+	void mapper_w(u8 data);
+	bool bank_register_w(u16 address, u8 data);
+	u32 ram_address(u16 address) const;
+	bool scc_active(u16 address) const;
+	u8 scc_r(u16 address);
+	void scc_w(u16 address, u8 data);
+
+	required_device<k051649_device> m_k051649;
+	std::unique_ptr<u8[]> m_ram;
+	u8 m_bank[4]{};
+	u8 m_mode = MODE_DDX_SCC;
+	bool m_rom_mode = true;
+};
+
+void msx_cart_wondertang_megaram_device::device_add_mconfig(machine_config &config)
+{
+	// K051649 is the SCC sound/register block only.  Super-MegaRAM remains
+	// solely responsible for all mapper registers and SDRAM bank selection.
+	K051649(config, m_k051649, DERIVED_CLOCK(1, 1));
+	if (parent_slot())
+		m_k051649->add_route(ALL_OUTPUTS, soundin(), 0.8);
+}
+
+void msx_cart_wondertang_megaram_device::device_start()
+{
+	m_ram = std::make_unique<u8[]>(2 * 1024 * 1024);
+	save_pointer(NAME(m_ram), 2 * 1024 * 1024);
+	save_item(NAME(m_bank));
+	save_item(NAME(m_mode));
+	save_item(NAME(m_rom_mode));
+
+	page(0)->install_readwrite_handler(0x0000, 0x3fff,
+		read8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_r<0>)),
+		write8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_w<0>)));
+	page(1)->install_readwrite_handler(0x4000, 0x7fff,
+		read8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_r<1>)),
+		write8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_w<1>)));
+	page(2)->install_readwrite_handler(0x8000, 0xbfff,
+		read8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_r<2>)),
+		write8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_w<2>)));
+	page(3)->install_readwrite_handler(0xc000, 0xffff,
+		read8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_r<3>)),
+		write8sm_delegate(*this, FUNC(msx_cart_wondertang_megaram_device::memory_w<3>)));
+
+	// Like the FPGA, neither control port drives the data bus on reads.
+	io_space().install_read_tap(0x8e, 0x8e, "wondertang_megaram_write", [this] (offs_t, u8 &, u8) { m_rom_mode = false; });
+	io_space().install_write_tap(0x8e, 0x8e, "wondertang_megaram_rom", [this] (offs_t, u8 &, u8) { m_rom_mode = true; });
+	io_space().install_write_tap(0x8f, 0x8f, "wondertang_megaram_mapper", [this] (offs_t, u8 &data, u8) { mapper_w(data); });
+}
+
+void msx_cart_wondertang_megaram_device::device_reset()
+{
+	for (unsigned bank = 0; bank < 4; ++bank)
+		m_bank[bank] = bank;
+	m_mode = MODE_DDX_SCC;
+	m_rom_mode = true;
+}
+
+void msx_cart_wondertang_megaram_device::mapper_w(u8 data)
+{
+	// LINEAR is latched until reset in the current New Juice RTL.
+	if (m_mode == MODE_LINEAR)
+		return;
+
+	switch (data)
+	{
+	case MODE_DDX_SCC:
+	case MODE_DDX:
+	case MODE_LINEAR:
+	case MODE_K4:
+	case MODE_K5:
+	case MODE_ASCII8:
+	case MODE_ASCII16:
+		m_mode = data;
+		break;
+	default:
+		m_mode = MODE_DDX_SCC;
+		break;
+	}
+}
+
+bool msx_cart_wondertang_megaram_device::bank_register_w(u16 address, u8 data)
+{
+	unsigned bank = 0;
+	bool selected = false;
+
+	switch (m_mode)
+	{
+	case MODE_DDX_SCC:
+	case MODE_DDX:
+		if (!(address & 0x0fff) && address >= 0x4000 && address < 0xc000)
+		{
+			bank = (address - 0x4000) >> 13;
+			selected = true;
+		}
+		break;
+
+	case MODE_ASCII8:
+		if (address >= 0x6000 && address <= 0x7fff)
+		{
+			bank = (address - 0x6000) >> 11;
+			selected = true;
+		}
+		break;
+
+	case MODE_ASCII16:
+		if (address >= 0x6000 && address <= 0x67ff)
+		{
+			bank = 0;
+			selected = true;
+		}
+		else if (address >= 0x7000 && address <= 0x77ff)
+		{
+			bank = 2;
+			selected = true;
+		}
+		break;
+
+	case MODE_K4:
+		if (address >= 0x4000 && address < 0xc000)
+		{
+			bank = (address - 0x4000) >> 13;
+			selected = true;
+		}
+		break;
+
+	case MODE_K5:
+		if ((address >= 0x5000 && address <= 0x57ff) ||
+			(address >= 0x7000 && address <= 0x77ff) ||
+			(address >= 0x9000 && address <= 0x97ff) ||
+			(address >= 0xb000 && address <= 0xb7ff))
+		{
+			bank = (address - 0x5000) >> 13;
+			selected = true;
+		}
+		break;
+	}
+
+	if (selected)
+		m_bank[bank] = data;
+	return selected;
+}
+
+u32 msx_cart_wondertang_megaram_device::ram_address(u16 address) const
+{
+	if (m_mode == MODE_LINEAR)
+		return address;
+	if (m_mode == MODE_ASCII16)
+	{
+		u8 const bank = address < 0x8000 ? m_bank[0] : m_bank[2];
+		return (u32(bank & 0x7f) << 14) | (address & 0x3fff);
+	}
+
+	unsigned const segment = (address - 0x4000) >> 13;
+	return (u32(m_bank[segment]) << 13) | (address & 0x1fff);
+}
+
+bool msx_cart_wondertang_megaram_device::scc_active(u16 address) const
+{
+	return m_rom_mode &&
+		(m_mode == MODE_DDX_SCC || m_mode == MODE_K5) &&
+		(m_bank[2] == 0x3f) &&
+		(address >= 0x9800 && address <= 0x9fff);
+}
+
+u8 msx_cart_wondertang_megaram_device::scc_r(u16 address)
+{
+	u8 const reg = u8(address);
+	if (reg <= 0x7f)
+		return m_k051649->k051649_waveform_r(reg);
+	if (reg >= 0xe0)
+		return m_k051649->k051649_test_r(memory_space());
+	return 0xff;
+}
+
+void msx_cart_wondertang_megaram_device::scc_w(u16 address, u8 data)
+{
+	u8 const reg = u8(address);
+	if (reg <= 0x7f)
+		m_k051649->k051649_waveform_w(reg, data);
+	else if ((reg >= 0x80 && reg <= 0x89) || (reg >= 0x90 && reg <= 0x99))
+		m_k051649->k051649_frequency_w(reg & 0x0f, data);
+	else if ((reg >= 0x8a && reg <= 0x8e) || (reg >= 0x9a && reg <= 0x9e))
+		m_k051649->k051649_volume_w((reg & 0x0f) - 0x0a, data);
+	else if (reg == 0x8f || reg == 0x9f)
+		m_k051649->k051649_keyonoff_w(data);
+	else if (reg >= 0xe0)
+		m_k051649->k051649_test_w(data);
+}
+
+template <unsigned Page>
+u8 msx_cart_wondertang_megaram_device::memory_r(offs_t offset)
+{
+	u16 const address = (Page << 14) | offset;
+	if (m_mode != MODE_LINEAR && (address < 0x4000 || address >= 0xc000))
+		return 0xff;
+	if (scc_active(address))
+		return scc_r(address);
+	return m_ram[ram_address(address)];
+}
+
+template <unsigned Page>
+void msx_cart_wondertang_megaram_device::memory_w(offs_t offset, u8 data)
+{
+	u16 const address = (Page << 14) | offset;
+	if (m_mode != MODE_LINEAR && (address < 0x4000 || address >= 0xc000))
+		return;
+	if (scc_active(address))
+	{
+		scc_w(address, data);
+		return;
+	}
+	if (!m_rom_mode)
+		m_ram[ram_address(address)] = data;
+	else
+		bank_register_w(address, data);
+}
+
+
+class msx_cart_wondertang_mm_device : public device_t, public msx_cart_interface
+{
+public:
+	msx_cart_wondertang_mm_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock)
+		: device_t(mconfig, MSX_CART_WONDERTANG_MM, tag, owner, clock)
+		, msx_cart_interface(mconfig, *this)
+		, m_bank(*this, "bank%u", 0U)
+	{ }
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+
+private:
+	template <unsigned Bank> void bank_w(offs_t, u8 &data, u8) { m_bank[Bank]->set_entry(data); }
+	template <unsigned Bank> void bank_r(offs_t, u8 &data, u8) { data = m_bank[Bank]->entry(); }
+
+	std::unique_ptr<u8[]> m_ram;
+	memory_bank_array_creator<4> m_bank;
+};
+
+void msx_cart_wondertang_mm_device::device_start()
+{
+	m_ram = std::make_unique<u8[]>(4 * 1024 * 1024);
+	save_pointer(NAME(m_ram), 4 * 1024 * 1024);
+
+	for (unsigned page_no = 0; page_no < 4; ++page_no)
+	{
+		m_bank[page_no]->configure_entries(0, 256, m_ram.get(), 0x4000);
+		page(page_no)->install_readwrite_bank(page_no * 0x4000, page_no * 0x4000 + 0x3fff, m_bank[page_no]);
+	}
+
+	io_space().install_read_tap(0xfc, 0xfc, "wondertang_mm_r0", [this] (offs_t o, u8 &d, u8 m) { bank_r<0>(o, d, m); });
+	io_space().install_read_tap(0xfd, 0xfd, "wondertang_mm_r1", [this] (offs_t o, u8 &d, u8 m) { bank_r<1>(o, d, m); });
+	io_space().install_read_tap(0xfe, 0xfe, "wondertang_mm_r2", [this] (offs_t o, u8 &d, u8 m) { bank_r<2>(o, d, m); });
+	io_space().install_read_tap(0xff, 0xff, "wondertang_mm_r3", [this] (offs_t o, u8 &d, u8 m) { bank_r<3>(o, d, m); });
+	io_space().install_write_tap(0xfc, 0xfc, "wondertang_mm_w0", [this] (offs_t o, u8 &d, u8 m) { bank_w<0>(o, d, m); });
+	io_space().install_write_tap(0xfd, 0xfd, "wondertang_mm_w1", [this] (offs_t o, u8 &d, u8 m) { bank_w<1>(o, d, m); });
+	io_space().install_write_tap(0xfe, 0xfe, "wondertang_mm_w2", [this] (offs_t o, u8 &d, u8 m) { bank_w<2>(o, d, m); });
+	io_space().install_write_tap(0xff, 0xff, "wondertang_mm_w3", [this] (offs_t o, u8 &d, u8 m) { bank_w<3>(o, d, m); });
+}
+
+void msx_cart_wondertang_mm_device::device_reset()
+{
+	m_bank[0]->set_entry(3);
+	m_bank[1]->set_entry(2);
+	m_bank[2]->set_entry(1);
+	m_bank[3]->set_entry(0);
+}
+
 } // anonymous namespace
 
 
@@ -542,3 +838,5 @@ DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_2048K_MM_RAM, msx_cart_interface, msx_cart_2
 DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_4096K_MM_RAM, msx_cart_interface, msx_cart_4096k_mm_ram_device, "msx_cart_4096k_mm_ram", "Generic MSX 4096K MM RAM Expansion")
 DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_DOUBLE_RAM,   msx_cart_interface, msx_cart_double_ram_device,   "msx_cart_double_ram",   "Tecnobytes Double RAM")
 DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_MMM,          msx_cart_interface, msx_cart_mmm_device,          "msx_cart_mmm",          "Popolon Musical Memory Mapper")
+DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_WONDERTANG_MEGARAM, msx_cart_interface, msx_cart_wondertang_megaram_device, "msx_cart_wondertang_megaram", "WonderTANG New Juice 2M Super-MegaRAM")
+DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_WONDERTANG_MM, msx_cart_interface, msx_cart_wondertang_mm_device, "msx_cart_wondertang_mm", "WonderTANG New Juice 4M Memory Mapper")

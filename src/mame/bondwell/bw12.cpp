@@ -101,7 +101,7 @@ private:
 
 	void floppy_motor_on_off();
 	TIMER_DEVICE_CALLBACK_MEMBER(floppy_motor_off_tick);
-	static void bw12_floppy_formats(format_registration &fr);
+	//static void bw12_floppy_formats(format_registration &fr);
 	static void bw14_floppy_formats(format_registration &fr);
 
 	void common(machine_config &config);
@@ -457,16 +457,16 @@ void bw12_state::machine_start()
 	machine().save().register_postload(save_prepost_delegate(FUNC(bw12_state::bankswitch), this));
 }
 
-static void bw12_floppies(device_slot_interface &device)
-{
-	device.option_add("525dd", FLOPPY_525_SSDD);
-}
+//static void bw12_floppies(device_slot_interface &device)
+//{
+	//device.option_add("525dd", FLOPPY_525_SSDD);
+//}
 
-void bw12_state::bw12_floppy_formats(format_registration &fr)
-{
-	fr.add_mfm_containers();
-	fr.add(FLOPPY_BW12_FORMAT);
-}
+//void bw12_state::bw12_floppy_formats(format_registration &fr)
+//{
+//	fr.add_mfm_containers();
+//	fr.add(FLOPPY_BW12_FORMAT);
+//}
 
 static void bw14_floppies(device_slot_interface &device)
 {
@@ -609,8 +609,10 @@ void bw12_state::bw12(machine_config &config)
 	common(config);
 
 	/* floppy drives */
-	FLOPPY_CONNECTOR(config, UPD765_TAG ":1", bw12_floppies, "525dd", bw12_state::bw12_floppy_formats).enable_sound(true);
-	FLOPPY_CONNECTOR(config, UPD765_TAG ":2", bw12_floppies, "525dd", bw12_state::bw12_floppy_formats).enable_sound(true);
+	FLOPPY_CONNECTOR(config, UPD765_TAG ":1", bw14_floppies, "525dd", bw12_state::bw14_floppy_formats).enable_sound(true);
+	FLOPPY_CONNECTOR(config, UPD765_TAG ":2", bw14_floppies, "525dd", bw12_state::bw14_floppy_formats).enable_sound(true);
+	//FLOPPY_CONNECTOR(config, UPD765_TAG ":1", bw12_floppies, "525dd", bw12_state::bw12_floppy_formats).enable_sound(true);
+	//FLOPPY_CONNECTOR(config, UPD765_TAG ":2", bw12_floppies, "525dd", bw12_state::bw12_floppy_formats).enable_sound(true);
 
 	// software lists
 	SOFTWARE_LIST(config, "flop_list").set_original("bw12");

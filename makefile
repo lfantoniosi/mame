@@ -107,7 +107,7 @@
 
 # QT_HOME = /usr/lib64/qt48/
 
-# SOURCES = src/mame/atari/asteroid.cpp,src/mame/cinematronics/cchasm.cpp
+SOURCES = src/mame/msx,src/devices/bus/msx/cart/ide.cpp,src/devices/bus/msx/cart/slotexpander.cpp,src/devices/bus/msx/cart/ram.cpp,src/devices/bus/msx/cart/fmpac.cpp,src/devices/bus/msx/cart/franky.cpp,src/mame/bondwell/bw12.cpp,src/lib/formats/upd765_dsk.cpp
 
 # SOURCEFILTER = mydrivers.flt
 

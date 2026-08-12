@@ -15,6 +15,7 @@ cartridges is the same.
 
 #include "bus/ata/ataintf.h"
 #include "bus/ata/hdd.h"
+#include "imagedev/harddriv.h"
 #include "machine/intelfsh.h"
 
 
@@ -192,6 +193,184 @@ void msx_cart_sunrise_ataide_device::device_reset()
 	//m_ata->write_dmack(1);
 }
 
+
+class msx_cart_wondertang_sdd_device : public device_t, public msx_cart_interface
+{
+public:
+	msx_cart_wondertang_sdd_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock)
+		: device_t(mconfig, MSX_CART_WONDERTANG_SDD, tag, owner, clock)
+		, msx_cart_interface(mconfig, *this)
+		, m_ata(*this, "ata")
+		, m_rom(*this, "^:^:dos")
+		, m_activity_led(*this, "activity_led")
+	{ }
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_reset() override ATTR_COLD;
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
+
+private:
+	u8 memory_r(offs_t offset);
+	void memory_w(offs_t offset, u8 data);
+	u8 register_r(u16 address);
+	void command_w(u8 data);
+	TIMER_CALLBACK_MEMBER(operation_done);
+
+	required_device<ata_interface_device> m_ata;
+	harddisk_image_device *m_hdd = nullptr;
+	required_region_ptr<u8> m_rom;
+	output_finder<> m_activity_led;
+	emu_timer *m_operation_timer = nullptr;
+	u8 m_buffer[512]{};
+	u32 m_sector = 0;
+	u8 m_bank = 0;
+	u8 m_pending_command = 0;
+	u8 m_error = 0;
+	bool m_overlay = false;
+	bool m_busy = false;
+};
+
+void msx_cart_wondertang_sdd_device::device_add_mconfig(machine_config &config)
+{
+	ATA_INTERFACE(config, m_ata).options(ata_devices, "hdd", nullptr, false);
+	m_ata->dasp_handler().set_output("activity_led");
+}
+
+void msx_cart_wondertang_sdd_device::device_start()
+{
+	m_hdd = subdevice<harddisk_image_device>("ata:0:hdd:image");
+	assert(m_hdd);
+	m_operation_timer = timer_alloc(FUNC(msx_cart_wondertang_sdd_device::operation_done), this);
+
+	page(1)->install_readwrite_handler(0x4000, 0x7fff,
+		read8sm_delegate(*this, FUNC(msx_cart_wondertang_sdd_device::memory_r)),
+		write8sm_delegate(*this, FUNC(msx_cart_wondertang_sdd_device::memory_w)));
+
+	save_item(NAME(m_buffer));
+	save_item(NAME(m_sector));
+	save_item(NAME(m_bank));
+	save_item(NAME(m_pending_command));
+	save_item(NAME(m_error));
+	save_item(NAME(m_overlay));
+	save_item(NAME(m_busy));
+}
+
+void msx_cart_wondertang_sdd_device::device_reset()
+{
+	m_operation_timer->adjust(attotime::never);
+	m_sector = 0;
+	m_bank = 0;
+	m_pending_command = 0;
+	m_error = 0;
+	m_overlay = false;
+	m_busy = false;
+	m_activity_led = 0;
+}
+
+u8 msx_cart_wondertang_sdd_device::memory_r(offs_t offset)
+{
+	u16 const address = 0x4000 | offset;
+	if (m_overlay)
+	{
+		if (address >= 0x7c00 && address < 0x7e00)
+			return m_buffer[address & 0x01ff];
+		if (address >= 0x7e00)
+			return register_r(address);
+	}
+	return m_rom[(u32(m_bank & 7) << 14) | offset];
+}
+
+void msx_cart_wondertang_sdd_device::memory_w(offs_t offset, u8 data)
+{
+	u16 const address = 0x4000 | offset;
+	if (address == 0x6000)
+		m_bank = data & 7;
+
+	if (address == 0x7e00)
+	{
+		m_overlay = BIT(data, 0);
+		return;
+	}
+	if (!m_overlay)
+		return;
+	if (address >= 0x7c00 && address < 0x7e00)
+	{
+		m_buffer[address & 0x01ff] = data;
+		return;
+	}
+
+	switch (address)
+	{
+	case 0x7e01: command_w(data); break;
+	case 0x7e03: m_sector = (m_sector & 0xffffff00U) | u32(data); break;
+	case 0x7e04: m_sector = (m_sector & 0xffff00ffU) | (u32(data) << 8); break;
+	case 0x7e05: m_sector = (m_sector & 0xff00ffffU) | (u32(data) << 16); break;
+	case 0x7e06: m_sector = (m_sector & 0x00ffffffU) | (u32(data) << 24); break;
+	default: break;
+	}
+}
+
+u8 msx_cart_wondertang_sdd_device::register_r(u16 address)
+{
+	if (address == 0x7e00)
+		return m_overlay;
+	if (address == 0x7e02)
+		return (m_busy ? 0x80 : 0x00) | m_error;
+	if (!m_hdd->exists())
+		return 0xff;
+
+	auto const &info = m_hdd->get_info();
+	u64 const sectors = u64(info.cylinders) * info.heads * info.sectors;
+	u32 const c_size = sectors >= 1024 ? std::min<u64>((sectors / 1024) - 1, 0x3fffff) : 0;
+	switch (address)
+	{
+	case 0x7e07: return BIT(c_size, 0, 8);
+	case 0x7e08: return BIT(c_size, 8, 8);
+	case 0x7e09: return BIT(c_size, 16, 6);
+	// Match the synthesized New Juice CSD 2.0 representation.  Its driver
+	// applies the legacy CSD capacity formula to these expanded fields:
+	// (C_SIZE + 1) * 2^(C_SIZE_MULT + 2) * 2^READ_BL_LEN.
+	case 0x7e0a: return 2;
+	case 0x7e0b: return 15;
+	case 0x7e0c: return 3; // SDHCv2 uses sector rather than byte addresses.
+	default: return 0;
+	}
+}
+
+void msx_cart_wondertang_sdd_device::command_w(u8 data)
+{
+	if (m_busy || (data != 0x80 && data != 1 && data != 2))
+		return;
+	m_pending_command = data;
+	m_error = 0;
+	m_busy = true;
+	m_activity_led = 1;
+	m_operation_timer->adjust(attotime::from_msec(1));
+}
+
+TIMER_CALLBACK_MEMBER(msx_cart_wondertang_sdd_device::operation_done)
+{
+	if (!m_hdd->exists())
+	{
+		m_error = 0x02;
+	}
+	else if (m_pending_command == 1 || m_pending_command == 2)
+	{
+		auto const &info = m_hdd->get_info();
+		u64 const sectors = u64(info.cylinders) * info.heads * info.sectors;
+		if (info.sectorbytes != 512 || m_sector >= sectors)
+			m_error = 0x02;
+		else if (!(m_pending_command == 1 ? m_hdd->read(m_sector, m_buffer) : m_hdd->write(m_sector, m_buffer)))
+			m_error = 0x01;
+	}
+
+	m_pending_command = 0;
+	m_busy = false;
+	m_activity_led = 0;
+}
+
 } // anonymous namespace
 
 DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_SUNRISE_ATAIDE, msx_cart_interface, msx_cart_sunrise_ataide_device, "msx_cart_sunrise_ataide", "Sunrise ATA-IDE/CF ATA-IDE Interface")
+DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_WONDERTANG_SDD, msx_cart_interface, msx_cart_wondertang_sdd_device, "msx_cart_wondertang_sdd", "WonderTANG New Juice SD/HDD Interface")

@@ -113,6 +113,7 @@ void msx_cart(device_slot_interface &device, bool is_in_subslot)
 	if (!is_in_subslot)
 	{
 		device.option_add(slotoptions::SLOTEXP, MSX_CART_SLOTEXPANDER);
+		device.option_add(slotoptions::WONDERTANG, MSX_CART_WONDERTANG);
 	}
 }
 

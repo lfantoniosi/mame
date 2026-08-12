@@ -29,16 +29,16 @@ const char *bw12_format::extensions() const noexcept
 	return "dsk";
 }
 
-// Unverified gap sizes
+// A flux capture shows 2:1 sector interleave with gap1=50, gap2=22 and
+// gap3=12 (matching the FORMAT TRACK GPL value of 0x0c).
 const bw12_format::format bw12_format::formats[] = {
 	{ // 180KB BW 12
 		floppy_image::FF_525, floppy_image::SSDD, floppy_image::MFM,
-		2000, 18, 40, 1, 256, {}, 0, {}, 80, 50, 12, 80
+		2000, 18, 40, 1, 256, {}, -1, { 0, 9, 1, 10, 2, 11, 3, 12, 4, 13, 5, 14, 6, 15, 7, 16, 8, 17 }, 80, 50, 22, 12
 	},
-	// format track mfm h=02 n=01 sc=12 gpl=0c d=e5
-	{ // 360KB BW 12
+	{ // 360KB BW 14
 		floppy_image::FF_525, floppy_image::DSDD, floppy_image::MFM,
-		2000, 18, 40, 2, 256, {}, 0, {}, 80, 50, 12, 80
+		2000, 18, 40, 2, 256, {}, -1, { 0, 9, 1, 10, 2, 11, 3, 12, 4, 13, 5, 14, 6, 15, 7, 16, 8, 17 }, 80, 50, 22, 12
 	},
 	{ // SVI-328
 		floppy_image::FF_525, floppy_image::SSDD, floppy_image::MFM,

@@ -10,6 +10,7 @@ with: PAC2 BACKUP DATA. We only store the raw sram contents.
 #include "emu.h"
 #include "fmpac.h"
 
+#include "sound/ymopm.h"
 #include "sound/ymopl.h"
 
 #include "speaker.h"
@@ -173,6 +174,65 @@ void msx_cart_fmpac_device::write_ym2413(offs_t offset, u8 data)
 	}
 }
 
+
+class msx_cart_wondertang_fmpac_device : public device_t, public msx_cart_interface
+{
+public:
+	msx_cart_wondertang_fmpac_device(const machine_config &mconfig, const char *tag, device_t *owner, u32 clock)
+		: device_t(mconfig, MSX_CART_WONDERTANG_FMPAC, tag, owner, clock)
+		, msx_cart_interface(mconfig, *this)
+		, m_ym2413(*this, "ym2413")
+		, m_ym2151(*this, "ym2151")
+		, m_fmpac_rom(*this, "^:^:fmpac")
+		, m_sfg_rom(*this, "^:^:sfg")
+	{ }
+
+protected:
+	virtual void device_start() override ATTR_COLD;
+	virtual void device_add_mconfig(machine_config &config) override ATTR_COLD;
+
+private:
+	void ym2151_irq_w(int state) { irq_out(state); }
+
+	required_device<ym2413_device> m_ym2413;
+	required_device<ym2151_device> m_ym2151;
+	required_region_ptr<u8> m_fmpac_rom;
+	required_region_ptr<u8> m_sfg_rom;
+};
+
+void msx_cart_wondertang_fmpac_device::device_add_mconfig(machine_config &config)
+{
+	YM2413(config, m_ym2413, DERIVED_CLOCK(1, 1));
+	if (parent_slot())
+		m_ym2413->add_route(ALL_OUTPUTS, soundin(), 0.8);
+
+	YM2151(config, m_ym2151, DERIVED_CLOCK(1, 1));
+	m_ym2151->irq_handler().set(FUNC(msx_cart_wondertang_fmpac_device::ym2151_irq_w));
+	if (parent_slot())
+	{
+		// New Juice averages the two OPM channels and attenuates the result.
+		m_ym2151->add_route(0, soundin(), 0.4);
+		m_ym2151->add_route(1, soundin(), 0.4);
+	}
+}
+
+void msx_cart_wondertang_fmpac_device::device_start()
+{
+	// Expanded subslot 1 contains both ROMs: SFG-01 in page 0 and the
+	// internal MSX-Music ROM in page 1.
+	page(0)->install_rom(0x0000, 0x3fff, m_sfg_rom);
+	page(1)->install_rom(0x4000, 0x7fff, m_fmpac_rom);
+
+	// The FPGA implements the OPLL as a write-only I/O slave.
+	io_space().install_write_handler(0x7c, 0x7d, emu::rw_delegate(*m_ym2413, FUNC(ym2413_device::write)));
+
+	// The SFG-01 interface is decoded only at 3ff0h/3ff1h.  Reading 3ff0h
+	// returns OPM status; 3ff1h is write-only in the New Juice RTL.
+	page(0)->install_read_handler(0x3ff0, 0x3ff0, emu::rw_delegate(*m_ym2151, FUNC(ym2151_device::status_r)));
+	page(0)->install_write_handler(0x3ff0, 0x3ff1, emu::rw_delegate(*m_ym2151, FUNC(ym2151_device::write)));
+}
+
 } // anonymous namespace
 
 DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_FMPAC, msx_cart_interface, msx_cart_fmpac_device, "msx_cart_fmpac", "MSX Cartridge - FM-PAC")
+DEFINE_DEVICE_TYPE_PRIVATE(MSX_CART_WONDERTANG_FMPAC, msx_cart_interface, msx_cart_wondertang_fmpac_device, "msx_cart_wondertang_fmpac", "WonderTANG New Juice FM-PAC")

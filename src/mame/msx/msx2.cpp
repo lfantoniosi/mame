@@ -2657,8 +2657,8 @@ ROM_START(hbf5)
 	ROM_REGION(0x4000, "subrom", 0)
 	ROM_LOAD("hbf5ext.rom", 0x0000, 0x4000, CRC(4a48779c) SHA1(b8e30d604d319d511cbfbc61e5d8c38fbb9c5a33))
 
-	ROM_REGION(0x4000, "firmware", 0)
-	ROM_LOAD("hbf5note.rom", 0x0000, 0x4000, CRC(0cdc0777) SHA1(06ba91d6732ee8a2ecd5dcc38b0ce42403d86708))
+	//ROM_REGION(0x4000, "firmware", 0)
+	//ROM_LOAD("hbf5note.rom", 0x0000, 0x4000, CRC(0cdc0777) SHA1(06ba91d6732ee8a2ecd5dcc38b0ce42403d86708))
 ROM_END
 
 void msx2_state::hbf5(machine_config &config)
@@ -2669,7 +2669,7 @@ void msx2_state::hbf5(machine_config &config)
 
 	add_internal_slot(config, MSX_SLOT_ROM, "mainrom", 0, 0, 0, 2, "mainrom");
 	add_internal_slot(config, MSX_SLOT_ROM, "subrom", 0, 1, 0, 1, "subrom");
-	add_internal_slot(config, MSX_SLOT_ROM, "firmware", 0, 1, 1, 1, "firmware");
+	//add_internal_slot(config, MSX_SLOT_ROM, "firmware", 0, 1, 1, 1, "firmware");
 	add_internal_slot(config, MSX_SLOT_RAM, "ram", 0, 2, 0, 4);   // 64KB RAM
 	add_cartridge_slot<1>(config, 1);
 	add_cartridge_slot<2>(config, 2);
